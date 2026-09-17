@@ -32,11 +32,15 @@ jobs:
         shell: pwsh
         run: |
           $assemblyInfo = Get-Content 'WandEnhancer/Properties/AssemblyInfo.cs' -Raw
-          if ($assemblyInfo -notmatch 'AssemblyVersion\("([^"]+)"\)') {
+          $versionMatch = [regex]::Match(
+            $assemblyInfo,
+            '(?m)^\s*\[assembly:\s*AssemblyVersion\("(?<version>[^"]+)"\)\]'
+          )
+          if (-not $versionMatch.Success) {
             throw 'Could not read AssemblyVersion from AssemblyInfo.cs'
           }
 
-          $version = $Matches[1]
+          $version = $versionMatch.Groups['version'].Value
           "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "Release version: $version"
