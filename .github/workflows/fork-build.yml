@@ -1,0 +1,64 @@
+name: Build executables (fork)
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: Executable variant to build
+        required: true
+        type: choice
+        default: both
+        options:
+          - both
+          - offline
+          - update-notifications
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10.17.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web-panel/pnpm-lock.yaml
+
+      - name: Build offline executable
+        if: ${{ inputs.variant == 'both' || inputs.variant == 'offline' }}
+        shell: pwsh
+        run: ./build.ps1 -Configuration Release
+
+      - name: Upload offline executable
+        if: ${{ inputs.variant == 'both' || inputs.variant == 'offline' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: WandEnhancer-offline
+          path: WandEnhancer/bin/Release/WandEnhancer.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build executable with update notifications
+        if: ${{ inputs.variant == 'both' || inputs.variant == 'update-notifications' }}
+        shell: pwsh
+        run: ./build.ps1 -Configuration Release -EnableUpdateNotifications
+
+      - name: Upload executable with update notifications
+        if: ${{ inputs.variant == 'both' || inputs.variant == 'update-notifications' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: WandEnhancer-update-notifications
+          path: WandEnhancer/bin/Release/WandEnhancer.exe
+          if-no-files-found: error
+          retention-days: 14
