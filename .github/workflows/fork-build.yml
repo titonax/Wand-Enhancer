@@ -1,27 +1,19 @@
-name: Build executables (fork)
+name: Build and publish release (fork)
 
 on:
   workflow_dispatch:
-    inputs:
-      variant:
-        description: Executable variant to build
-        required: true
-        type: choice
-        default: both
-        options:
-          - both
-          - offline
-          - update-notifications
 
 jobs:
-  build:
+  release:
     runs-on: windows-latest
     permissions:
-      contents: read
+      contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
@@ -35,30 +27,72 @@ jobs:
           cache: pnpm
           cache-dependency-path: web-panel/pnpm-lock.yaml
 
-      - name: Build offline executable
-        if: ${{ inputs.variant == 'both' || inputs.variant == 'offline' }}
+      - name: Read release version
+        id: version
         shell: pwsh
-        run: ./build.ps1 -Configuration Release
+        run: |
+          $assemblyInfo = Get-Content 'WandEnhancer/Properties/AssemblyInfo.cs' -Raw
+          if ($assemblyInfo -notmatch 'AssemblyVersion\("([^"]+)"\)') {
+            throw 'Could not read AssemblyVersion from AssemblyInfo.cs'
+          }
 
-      - name: Upload offline executable
-        if: ${{ inputs.variant == 'both' || inputs.variant == 'offline' }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: WandEnhancer-offline
-          path: WandEnhancer/bin/Release/WandEnhancer.exe
-          if-no-files-found: error
-          retention-days: 14
+          $version = $Matches[1]
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Release version: $version"
+
+      - name: Validate release metadata
+        shell: pwsh
+        run: ./scripts/validate-release-metadata.ps1 -ExpectedVersion $env:VERSION
+
+      - name: Extract release notes
+        shell: pwsh
+        run: ./scripts/get-changelog-section.ps1 -Version $env:VERSION -OutputPath release-notes.md
+
+      - name: Build offline executable
+        shell: pwsh
+        run: |
+          ./build.ps1 -Configuration Release
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          Copy-Item 'WandEnhancer/bin/Release/WandEnhancer.exe' "release-assets/WandEnhancer-$env:VERSION-offline.exe"
 
       - name: Build executable with update notifications
-        if: ${{ inputs.variant == 'both' || inputs.variant == 'update-notifications' }}
         shell: pwsh
-        run: ./build.ps1 -Configuration Release -EnableUpdateNotifications
+        run: |
+          ./build.ps1 -Configuration Release -EnableUpdateNotifications
+          Copy-Item 'WandEnhancer/bin/Release/WandEnhancer.exe' "release-assets/WandEnhancer-$env:VERSION-update-notifications.exe"
 
-      - name: Upload executable with update notifications
-        if: ${{ inputs.variant == 'both' || inputs.variant == 'update-notifications' }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: WandEnhancer-update-notifications
-          path: WandEnhancer/bin/Release/WandEnhancer.exe
-          if-no-files-found: error
-          retention-days: 14
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = '${{ github.repository }}'
+          $tag = $env:VERSION
+          $offline = "release-assets/WandEnhancer-$tag-offline.exe"
+          $updates = "release-assets/WandEnhancer-$tag-update-notifications.exe"
+
+          gh release view $tag --repo $repo *> $null
+          $releaseExists = ($LASTEXITCODE -eq 0)
+
+          if ($releaseExists) {
+            Write-Host "Release $tag already exists; updating notes and executable assets."
+            gh release edit $tag --repo $repo --title $tag --notes-file release-notes.md
+            if ($LASTEXITCODE -ne 0) { throw "Could not update release $tag" }
+
+            gh release upload $tag $offline $updates --repo $repo --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Could not upload assets to release $tag" }
+          }
+          else {
+            Write-Host "Creating release $tag."
+            gh release create $tag $offline $updates --repo $repo --title $tag --notes-file release-notes.md --target '${{ github.sha }}'
+            if ($LASTEXITCODE -ne 0) { throw "Could not create release $tag" }
+          }
+
+      - name: Summary
+        shell: pwsh
+        run: |
+          "### WandEnhancer $env:VERSION" >> $env:GITHUB_STEP_SUMMARY
+          "Published as a GitHub Release with:" >> $env:GITHUB_STEP_SUMMARY
+          "- WandEnhancer-$env:VERSION-offline.exe" >> $env:GITHUB_STEP_SUMMARY
+          "- WandEnhancer-$env:VERSION-update-notifications.exe" >> $env:GITHUB_STEP_SUMMARY
