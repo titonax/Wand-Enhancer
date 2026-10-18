@@ -9,11 +9,41 @@ jobs:
     permissions:
       contents: write
 
+    env:
+      UPSTREAM_REPO: k1tbyte/Wand-Enhancer
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      # Build the latest upstream release without touching this repository: the
+      # merge exists only inside the runner. Re-running with nothing new is a no-op.
+      - name: Merge latest upstream release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = gh api "repos/$env:UPSTREAM_REPO/releases/latest" --jq .tag_name
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tag)) {
+            throw "Could not read the latest release of $env:UPSTREAM_REPO"
+          }
+          $tag = $tag.Trim()
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream "https://github.com/$env:UPSTREAM_REPO.git"
+          git fetch upstream "refs/tags/${tag}:refs/tags/upstream-${tag}"
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch upstream tag $tag" }
+
+          git merge --no-edit "upstream-${tag}"
+          if ($LASTEXITCODE -ne 0) { throw "Merging upstream $tag conflicts with this fork; resolve it manually" }
+
+          $sha = (git rev-parse "upstream-${tag}^{commit}").Trim()
+          "UPSTREAM_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "UPSTREAM_SHA=$sha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Merged upstream $tag ($sha)"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
@@ -51,7 +81,9 @@ jobs:
 
       - name: Extract release notes
         shell: pwsh
-        run: ./scripts/get-changelog-section.ps1 -Version $env:VERSION -OutputPath release-notes.md
+        run: |
+          ./scripts/get-changelog-section.ps1 -Version $env:VERSION -OutputPath release-notes.md
+          Add-Content -Path release-notes.md -Encoding utf8 -Value "`nBuilt from upstream [$env:UPSTREAM_REPO $env:UPSTREAM_TAG](https://github.com/$env:UPSTREAM_REPO/releases/tag/$env:UPSTREAM_TAG) ($env:UPSTREAM_SHA)."
 
       - name: Build offline executable
         shell: pwsh
