@@ -45,6 +45,22 @@ jobs:
           "UPSTREAM_SHA=$sha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Merged upstream $tag ($sha)"
 
+      # The update checker must read releases from this fork, never from upstream.
+      # A merge that reverts Constants.Owner or re-hardcodes the upstream URL fails here.
+      - name: Check the update source is this fork
+        shell: pwsh
+        run: |
+          $constants = Get-Content 'WandEnhancer/Constants.cs' -Raw
+          $owner = [regex]::Match($constants, 'Owner\s*=\s*"([^"]+)"').Groups[1].Value
+          $repo = [regex]::Match($constants, 'RepoName\s*=\s*"([^"]+)"').Groups[1].Value
+          if ($owner -ne '${{ github.repository_owner }}' -or $repo -ne '${{ github.event.repository.name }}') {
+            throw "Constants.cs points to $owner/$repo, expected ${{ github.repository }}"
+          }
+          if ((Get-Content 'WandEnhancer/Core/UpdateNotifier.cs' -Raw) -match 'github\.com/repos/[^{"]') {
+            throw 'UpdateNotifier.cs hardcodes a repository; it must use Constants.Owner/RepoName'
+          }
+          Write-Host "Update source: $owner/$repo"
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
         with:
